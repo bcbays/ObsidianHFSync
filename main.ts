@@ -593,7 +593,17 @@ export default class HFSyncPlugin extends Plugin {
 	/** Reloads this plugin in-place via Obsidian's plugin manager so the newly written main.js takes effect. */
 	private async reloadSelf(): Promise<void> {
 		try {
-			// The plugin manager isn't part of the public obsidian-api typings, hence the cast.
+			// Obsidian loads plugin code via Node's require(), which caches modules by resolved file path.
+			// Without busting that cache entry first, disabling/re-enabling would keep running the OLD
+			// in-memory code even though the new main.js has already been written to disk.
+			try {
+				const basePath = this.getVaultBasePath();
+				const mainJsPath = join(basePath, this.app.vault.configDir, "plugins", this.manifest.id, "main.js");
+				delete require.cache[require.resolve(mainJsPath)];
+			} catch {
+				// best effort; if this fails, enablePlugin() may still pick up stale code until a manual restart
+			}
+
 			const plugins = (this.app as unknown as { plugins: { disablePlugin: (id: string) => Promise<void>; enablePlugin: (id: string) => Promise<void> } }).plugins;
 			await plugins.disablePlugin(this.manifest.id);
 			await plugins.enablePlugin(this.manifest.id);
