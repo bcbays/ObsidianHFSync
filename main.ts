@@ -1,4 +1,4 @@
-import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, requestUrl, Setting } from "obsidian";
 import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
@@ -6,6 +6,14 @@ import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
+const GITHUB_REPO = "bcbays/ObsidianHFSync";
+const GITHUB_API_LATEST_RELEASE = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const UPDATE_ASSET_NAMES = ["main.js", "manifest.json", "styles.css"] as const;
+
+interface LatestRelease {
+	version: string;
+	assets: Partial<Record<(typeof UPDATE_ASSET_NAMES)[number], string>>;
+}
 
 interface HFSyncSettings {
 	gitPath: string;
@@ -26,6 +34,8 @@ export default class HFSyncPlugin extends Plugin {
 	private busy = false;
 	private refreshingStatus = false;
 	private statusRefreshTimer: number | null = null;
+	/** True while a self-update check/download is in progress; guards against overlapping update attempts. */
+	private updating = false;
 
 	async onload() {
 		await this.loadSettings();
@@ -89,6 +99,11 @@ export default class HFSyncPlugin extends Plugin {
 			showStatusBarItem:
 				typeof loaded.showStatusBarItem === "boolean" ? loaded.showStatusBarItem : DEFAULT_SETTINGS.showStatusBarItem,
 		};
+		// Persist the sanitized settings immediately so any unknown/stale keys left over from an older
+		// version are pruned from disk right away, instead of lingering until the next user-triggered save.
+		if (JSON.stringify(loaded) !== JSON.stringify(this.settings)) {
+			await this.saveSettings();
+		}
 	}
 
 	async saveSettings() {
@@ -472,6 +487,120 @@ export default class HFSyncPlugin extends Plugin {
 			void this.refreshSyncStatus();
 		}
 	}
+
+	/**
+	 * Checks GitHub for a newer published release and, if one is found, downloads its pre-built assets
+	 * (main.js/manifest.json/styles.css) and installs them. Never clones or builds from source \u2014 only the
+	 * already-reviewed, already-built files attached to a tagged release are ever fetched or executed.
+	 */
+	async checkForUpdate(notifyIfUpToDate: boolean): Promise<void> {
+		if (this.updating) {
+			new Notice("HF Sync: an update is already in progress.");
+			return;
+		}
+		this.updating = true;
+		try {
+			const release = await this.fetchLatestRelease();
+			if (!release) return;
+			if (!this.isNewerVersion(release.version, this.manifest.version)) {
+				if (notifyIfUpToDate) {
+					new Notice(`HF Sync: already up to date (v${this.manifest.version}).`);
+				}
+				return;
+			}
+			new Notice(`HF Sync: downloading update v${release.version}...`);
+			await this.downloadAndApplyUpdate(release);
+		} finally {
+			this.updating = false;
+		}
+	}
+
+	/** Fetches the latest release's asset URLs and version from GitHub. Returns null (with a Notice) on failure. */
+	private async fetchLatestRelease(): Promise<LatestRelease | null> {
+		try {
+			const releaseResponse = await requestUrl({
+				url: GITHUB_API_LATEST_RELEASE,
+				headers: { Accept: "application/vnd.github+json", "User-Agent": "ObsidianHFSync-UpdateChecker" },
+			});
+			const body = releaseResponse.json as { assets?: { name: string; browser_download_url: string }[] };
+			const assets: LatestRelease["assets"] = {};
+			for (const asset of body.assets ?? []) {
+				if ((UPDATE_ASSET_NAMES as readonly string[]).includes(asset.name)) {
+					assets[asset.name as (typeof UPDATE_ASSET_NAMES)[number]] = asset.browser_download_url;
+				}
+			}
+			if (!assets["main.js"] || !assets["manifest.json"]) {
+				new Notice("HF Sync: latest release is missing required files (main.js/manifest.json).");
+				return null;
+			}
+			const manifestResponse = await requestUrl({ url: assets["manifest.json"] as string });
+			const manifest = manifestResponse.json as { version?: string };
+			if (!manifest.version) {
+				new Notice("HF Sync: could not read a version from the latest release's manifest.json.");
+				return null;
+			}
+			return { version: manifest.version, assets };
+		} catch (err) {
+			new Notice(`HF Sync: failed to check for updates.\n${(err as Error).message}`);
+			return null;
+		}
+	}
+
+	private isNewerVersion(remote: string, local: string): boolean {
+		const parse = (v: string) => v.split(".").map((n) => parseInt(n, 10) || 0);
+		const [remoteMajor, remoteMinor, remotePatch] = parse(remote);
+		const [localMajor, localMinor, localPatch] = parse(local);
+		if (remoteMajor !== localMajor) return remoteMajor > localMajor;
+		if (remoteMinor !== localMinor) return remoteMinor > localMinor;
+		return remotePatch > localPatch;
+	}
+
+	/** Downloads each released asset and writes it into this plugin's own folder, rolling back on any failure. */
+	private async downloadAndApplyUpdate(release: LatestRelease): Promise<void> {
+		const adapter = this.app.vault.adapter;
+		const pluginDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+		const names = UPDATE_ASSET_NAMES.filter((name) => release.assets[name]);
+
+		// Back up the current file contents in memory so a failed/partial download can be rolled back cleanly.
+		const backups = new Map<string, string>();
+		for (const name of names) {
+			const path = `${pluginDir}/${name}`;
+			if (await adapter.exists(path)) {
+				backups.set(name, await adapter.read(path));
+			}
+		}
+
+		try {
+			for (const name of names) {
+				const assetUrl = release.assets[name] as string;
+				const response = await requestUrl({ url: assetUrl });
+				await adapter.write(`${pluginDir}/${name}`, response.text);
+			}
+			new Notice(`HF Sync: updated to v${release.version}. Reloading plugin...`);
+			await this.reloadSelf();
+		} catch (err) {
+			for (const [name, content] of backups) {
+				try {
+					await adapter.write(`${pluginDir}/${name}`, content);
+				} catch {
+					// best effort; nothing more we can do automatically
+				}
+			}
+			new Notice(`HF Sync: update failed and was rolled back.\n${(err as Error).message}`);
+		}
+	}
+
+	/** Reloads this plugin in-place via Obsidian's plugin manager so the newly written main.js takes effect. */
+	private async reloadSelf(): Promise<void> {
+		try {
+			// The plugin manager isn't part of the public obsidian-api typings, hence the cast.
+			const plugins = (this.app as unknown as { plugins: { disablePlugin: (id: string) => Promise<void>; enablePlugin: (id: string) => Promise<void> } }).plugins;
+			await plugins.disablePlugin(this.manifest.id);
+			await plugins.enablePlugin(this.manifest.id);
+		} catch {
+			new Notice("HF Sync: update installed, but automatic reload failed. Please restart Obsidian.");
+		}
+	}
 }
 
 class HFSyncSettingTab extends PluginSettingTab {
@@ -530,6 +659,21 @@ class HFSyncSettingTab extends PluginSettingTab {
 					.setButtonText("Sync now")
 					.setCta()
 					.onClick(() => void this.plugin.sync())
+			);
+
+		containerEl.createEl("h2", { text: "Updates" });
+
+		new Setting(containerEl)
+			.setName("Current version")
+			.setDesc(`v${this.plugin.manifest.version}`);
+
+		new Setting(containerEl)
+			.setName("Check for updates")
+			.setDesc(
+				"Downloads the latest release's pre-built files from GitHub, replaces this plugin's files, and reloads it automatically. Does not clone or build from source."
+			)
+			.addButton((button) =>
+				button.setButtonText("Check for updates").onClick(() => void this.plugin.checkForUpdate(true))
 			);
 	}
 }
