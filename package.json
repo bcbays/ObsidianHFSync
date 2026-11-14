@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-hf-sync",
-	"version": "1.0.0",
+	"version": "0.0.0",
 	"description": "Sync your Obsidian vault with a git remote (pull, commit, push) with a single click.",
 	"main": "dist/hf-sync/main.js",
 	"scripts": {
