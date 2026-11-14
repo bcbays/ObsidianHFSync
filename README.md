@@ -26,7 +26,7 @@ Sync your Obsidian vault with a git remote (pull, commit, push) with a single cl
   - **Git executable path** — point at a specific `git` binary if it's not on your system `PATH`.
   - **Pull on startup** — toggle automatic pull when Obsidian opens.
   - **Show status bar item** — toggle the status bar indicator.
-  - **Check for updates** — downloads the latest published release's pre-built files from GitHub and installs them, then reloads the plugin automatically (see [Releasing](#releasing) below for how updates get published).
+  - **Check for updates** — downloads the latest published release's pre-built files from GitHub and installs them, then attempts to reload the plugin automatically (see [Releasing](#releasing) below for how updates get published). If the automatic reload doesn't fully take effect (rare, but possible depending on your Obsidian version), a manual restart of Obsidian will finish applying the update.
 - Desktop-only plugin (relies on the local git CLI and filesystem access).
 
 ## Development
