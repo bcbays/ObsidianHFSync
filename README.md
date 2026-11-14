@@ -34,7 +34,7 @@ Sync your Obsidian vault with a git remote (pull, commit, push) with a single cl
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v20+ recommended) and npm.
+- [Node.js](https://nodejs.org/) (v26+ recommended, current Active LTS) and npm.
 - `git` installed and available on your `PATH` (or configurable via the plugin's "Git executable path" setting).
 
 ### Setup
