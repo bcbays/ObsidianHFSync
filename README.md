@@ -8,6 +8,7 @@ Sync your Obsidian vault with a git remote (pull, commit, push) with a single cl
 
 - **One-click sync** — a ribbon icon, a command, and a "Sync now" button in settings all trigger the same full sync: commit any local changes, pull/rebase the latest changes from the remote, then push.
   - Commits happen *before* pulling, so your edits are always safely recorded locally before the working tree is touched by a pull/rebase.
+  - Commit messages are auto-generated as `Vault sync: <ISO 8601 timestamp>`.
 - **Granular commands**, available from the command palette:
   - `Sync vault (pull, commit, push)` — full sync.
   - `Pull changes from remote` — pull/rebase only.
@@ -68,9 +69,9 @@ Releases are automated via [`.github/workflows/release.yml`](.github/workflows/r
 To cut a release, run one of:
 
 ```bash
-npm run release:patch   # 1.0.0 -> 1.0.1 (bug fixes)
-npm run release:minor   # 1.0.0 -> 1.1.0 (new features)
-npm run release:major   # 1.0.0 -> 2.0.0 (breaking changes)
+npm run release:patch   # 0.0.0 -> 0.0.1 (bug fixes)
+npm run release:minor   # 0.0.0 -> 0.1.0 (new features)
+npm run release:major   # 0.0.0 -> 1.0.0 (breaking changes)
 ```
 
 These follow [semantic versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`):
