@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, requestUrl, Setting } from "obsidian";
 import { execFile } from "child_process";
 import { existsSync } from "fs";
+import { hostname } from "os";
 import { join } from "path";
 import { promisify } from "util";
 
@@ -19,12 +20,14 @@ interface HFSyncSettings {
 	gitPath: string;
 	pullOnStartup: boolean;
 	showStatusBarItem: boolean;
+	includeDeviceName: boolean;
 }
 
 const DEFAULT_SETTINGS: HFSyncSettings = {
 	gitPath: "git",
 	pullOnStartup: false,
 	showStatusBarItem: true,
+	includeDeviceName: false,
 };
 
 export default class HFSyncPlugin extends Plugin {
@@ -100,6 +103,8 @@ export default class HFSyncPlugin extends Plugin {
 			pullOnStartup: typeof loaded.pullOnStartup === "boolean" ? loaded.pullOnStartup : DEFAULT_SETTINGS.pullOnStartup,
 			showStatusBarItem:
 				typeof loaded.showStatusBarItem === "boolean" ? loaded.showStatusBarItem : DEFAULT_SETTINGS.showStatusBarItem,
+			includeDeviceName:
+				typeof loaded.includeDeviceName === "boolean" ? loaded.includeDeviceName : DEFAULT_SETTINGS.includeDeviceName,
 		};
 		// Persist the sanitized settings immediately so any unknown/stale keys left over from an older
 		// version are pruned from disk right away, instead of lingering until the next user-triggered save.
@@ -412,7 +417,9 @@ export default class HFSyncPlugin extends Plugin {
 			if (status.length === 0) {
 				return false;
 			}
-			const message = `Vault sync: ${new Date().toISOString()}`;
+			const message = this.settings.includeDeviceName
+				? `Vault sync: ${new Date().toISOString()} (${hostname()})`
+				: `Vault sync: ${new Date().toISOString()}`;
 			await this.runGit(["commit", "-m", message], basePath);
 			return true;
 		} catch (err) {
@@ -680,6 +687,16 @@ class HFSyncSettingTab extends PluginSettingTab {
 					this.plugin.settings.showStatusBarItem = value;
 					await this.plugin.saveSettings();
 					this.plugin.refreshStatusBarVisibility();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Include device name in commit messages")
+			.setDesc("Append this device's hostname to commit messages, e.g. 'Vault sync: ... (my-laptop)'.")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.includeDeviceName).onChange(async (value) => {
+					this.plugin.settings.includeDeviceName = value;
+					await this.plugin.saveSettings();
 				})
 			);
 
