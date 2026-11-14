@@ -36,6 +36,8 @@ export default class HFSyncPlugin extends Plugin {
 	private statusRefreshTimer: number | null = null;
 	/** True while a self-update check/download is in progress; guards against overlapping update attempts. */
 	private updating = false;
+	/** Set once "Check for updates" finds a newer release; cleared once that update is applied (or a fresh check is run). */
+	pendingUpdate: LatestRelease | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -489,9 +491,9 @@ export default class HFSyncPlugin extends Plugin {
 	}
 
 	/**
-	 * Checks GitHub for a newer published release and, if one is found, downloads its pre-built assets
-	 * (main.js/manifest.json/styles.css) and installs them. Never clones or builds from source \u2014 only the
-	 * already-reviewed, already-built files attached to a tagged release are ever fetched or executed.
+	 * Checks GitHub for a newer published release. If one is found, its metadata is stored in
+	 * `pendingUpdate` (for the settings UI to offer an "Update and reload" button) rather than being
+	 * installed immediately \u2014 installing only happens when `applyPendingUpdate()` is explicitly called.
 	 */
 	async checkForUpdate(notifyIfUpToDate: boolean): Promise<void> {
 		if (this.updating) {
@@ -500,6 +502,7 @@ export default class HFSyncPlugin extends Plugin {
 		}
 		this.updating = true;
 		try {
+			this.pendingUpdate = null;
 			const release = await this.fetchLatestRelease();
 			if (!release) return;
 			if (!this.isNewerVersion(release.version, this.manifest.version)) {
@@ -508,8 +511,33 @@ export default class HFSyncPlugin extends Plugin {
 				}
 				return;
 			}
+			this.pendingUpdate = release;
+			new Notice(`HF Sync: v${release.version} is available. Click "Update and reload" to install it.`);
+		} finally {
+			this.updating = false;
+		}
+	}
+
+	/**
+	 * Downloads and installs the release found by the last `checkForUpdate()` call, then restarts Obsidian.
+	 * Never clones or builds from source \u2014 only the already-reviewed, already-built files attached to a
+	 * tagged release are ever fetched or executed.
+	 */
+	async applyPendingUpdate(): Promise<void> {
+		if (this.updating) {
+			new Notice("HF Sync: an update is already in progress.");
+			return;
+		}
+		const release = this.pendingUpdate;
+		if (!release) {
+			new Notice("HF Sync: no update to install. Check for updates first.");
+			return;
+		}
+		this.updating = true;
+		try {
 			new Notice(`HF Sync: downloading update v${release.version}...`);
 			await this.downloadAndApplyUpdate(release);
+			this.pendingUpdate = null;
 		} finally {
 			this.updating = false;
 		}
@@ -576,7 +604,7 @@ export default class HFSyncPlugin extends Plugin {
 				const response = await requestUrl({ url: assetUrl });
 				await adapter.write(`${pluginDir}/${name}`, response.text);
 			}
-			new Notice(`HF Sync: updated to v${release.version}. Reloading plugin...`);
+			new Notice(`HF Sync: updated to v${release.version}. Restarting Obsidian...`);
 			await this.reloadSelf();
 		} catch (err) {
 			for (const [name, content] of backups) {
@@ -590,25 +618,19 @@ export default class HFSyncPlugin extends Plugin {
 		}
 	}
 
-	/** Reloads this plugin in-place via Obsidian's plugin manager so the newly written main.js takes effect. */
+	/** Restarts the Obsidian app window so the newly written plugin files are loaded completely fresh. */
 	private async reloadSelf(): Promise<void> {
 		try {
-			// Obsidian loads plugin code via Node's require(), which caches modules by resolved file path.
-			// Without busting that cache entry first, disabling/re-enabling would keep running the OLD
-			// in-memory code even though the new main.js has already been written to disk.
-			try {
-				const basePath = this.getVaultBasePath();
-				const mainJsPath = join(basePath, this.app.vault.configDir, "plugins", this.manifest.id, "main.js");
-				delete require.cache[require.resolve(mainJsPath)];
-			} catch {
-				// best effort; if this fails, enablePlugin() may still pick up stale code until a manual restart
+			// Obsidian's built-in "Reload app without saving" command reloads the whole renderer window,
+			// which is far more reliable than trying to hot-swap just this plugin (Node's require() cache
+			// and in-memory references to the old plugin instance make partial reloads error-prone).
+			const commands = (this.app as unknown as { commands: { executeCommandById: (id: string) => boolean } }).commands;
+			const reloaded = commands.executeCommandById("app:reload");
+			if (!reloaded) {
+				throw new Error("app:reload command unavailable");
 			}
-
-			const plugins = (this.app as unknown as { plugins: { disablePlugin: (id: string) => Promise<void>; enablePlugin: (id: string) => Promise<void> } }).plugins;
-			await plugins.disablePlugin(this.manifest.id);
-			await plugins.enablePlugin(this.manifest.id);
 		} catch {
-			new Notice("HF Sync: update installed, but automatic reload failed. Please restart Obsidian.");
+			new Notice("HF Sync: update installed. Please restart Obsidian to finish applying it.");
 		}
 	}
 }
@@ -679,11 +701,26 @@ class HFSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Check for updates")
-			.setDesc(
-				"Downloads the latest release's pre-built files from GitHub, replaces this plugin's files, and reloads it automatically. Does not clone or build from source."
-			)
+			.setDesc("Checks GitHub for a newer published release. Does not clone or build from source.")
 			.addButton((button) =>
-				button.setButtonText("Check for updates").onClick(() => void this.plugin.checkForUpdate(true))
+				button.setButtonText("Check for updates").onClick(async () => {
+					await this.plugin.checkForUpdate(true);
+					this.display();
+				})
 			);
+
+		if (this.plugin.pendingUpdate) {
+			new Setting(containerEl)
+				.setName("Update available")
+				.setDesc(
+					`v${this.plugin.pendingUpdate.version} is ready to install. This downloads the release's pre-built files, replaces this plugin's files, and restarts Obsidian to apply them.`
+				)
+				.addButton((button) =>
+					button
+						.setButtonText("Update and reload")
+						.setCta()
+						.onClick(() => void this.plugin.applyPendingUpdate())
+				);
+		}
 	}
 }
