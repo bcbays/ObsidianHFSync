@@ -11,7 +11,7 @@
 		"release:major": "node scripts/release.mjs major"
 	},
 	"keywords": [],
-	"author": "",
+	"author": "Blake C. Bays",
 	"license": "MIT",
 	"engines": {
 		"node": ">=26"
